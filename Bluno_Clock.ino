@@ -19,6 +19,7 @@ void loop() {
     String data = Serial.readStringUntil('\n');
     processRGBData(data);
     lastActivityTime = millis();
+    sendCompletionSignal();
   }
 
   if (millis() - lastActivityTime >= 10000) {
@@ -26,6 +27,7 @@ void loop() {
     delay(25);
   }
 }
+
 
 void processRGBData(String data) {
   data.trim();
@@ -38,11 +40,13 @@ void processRGBData(String data) {
     int g = data.substring(firstComma + 1, secondComma).toInt();
     int b = data.substring(secondComma + 1).toInt();
 
-    analogWrite(rPin, 255 - r);
-    analogWrite(gPin, 255 - g);
-    analogWrite(bPin, 255 - b);
+    if (r > -1 && g > -1 && b > -1) {
+      analogWrite(rPin, 255 - r);
+      analogWrite(gPin, 255 - g);
+      analogWrite(bPin, 255 - b);
 
-    lastActivityTime = millis();
+      lastActivityTime = millis();
+    }
   }
 }
 
@@ -55,4 +59,12 @@ void slowPulse() {
   analogWrite(rPin, pulseValue);
   analogWrite(gPin, pulseValue);
   analogWrite(bPin, pulseValue);
+}
+
+void sendCompletionSignal() {
+  Serial.println("DONE");
+  Serial.flush();
+  while (Serial.available() > 0) {
+    Serial.read();
+  }
 }
