@@ -1,140 +1,101 @@
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLE2902.h>
-#include <FastLED.h>
-#include "esp_gap_ble_api.h"
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <ESPmDNS.h>
+#include "esp_wifi.h"
 
-#define LED_PIN     5
-#define NUM_LEDS    72
-#define BRIGHTNESS  100
-#define LED_TYPE    WS2812B
-#define COLOR_ORDER GRB
+const int rPin = 3;
+const int gPin = 4;
+const int bPin = 5;
 
-#define SERVICE_UUID           "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID_RX "beb5483e-36e1-4688-b7f5-ea07361b26a8"
-#define CHARACTERISTIC_UUID_TX "beb5483f-36e1-4688-b7f5-ea07361b26a8"
+const char* WIFI_SSID = "Czekoladowa Rozkosz";
+const char* WIFI_PASSWORD = "MlecznaDolina";
+const unsigned int UDP_PORT = 4210;
+const char* DEVICE_ID = "b4e91b7f";
 
-CRGB leds[NUM_LEDS];
-BLECharacteristic* pTxCharacteristic;
-bool deviceConnected = false;
-esp_bd_addr_t lastPeerAddress;
+WiFiUDP udp;
 
 unsigned long lastActivityTime = 0;
 int pulseValue = 0;
 int pulseDirection = 1;
-portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
-class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer) {
-    deviceConnected = true;
-  }
-
-  void onDisconnect(BLEServer* pServer) {
-    deviceConnected = false;
-    delay(500);
-    BLEDevice::startAdvertising();
-  }
-};
-
-void gapCallback(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
-  if (event == ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT) {
-    memcpy(lastPeerAddress, param->update_conn_params.bda, sizeof(esp_bd_addr_t));
-
-    esp_ble_conn_update_params_t conn_params = {
-      .bda = {0},
-      .min_int = 0x18,
-      .max_int = 0x28,
-      .latency = 0,
-      .timeout = 400
-    };
-    memcpy(conn_params.bda, lastPeerAddress, sizeof(esp_bd_addr_t));
-    esp_ble_gap_update_conn_params(&conn_params);
-
-    esp_ble_gap_set_preferred_phy(
-      lastPeerAddress,
-      ESP_BLE_GAP_PHY_1M,
-      ESP_BLE_GAP_PHY_2M,
-      ESP_BLE_GAP_PHY_2M,
-      ESP_BLE_GAP_PHY_OPTIONS_NO_PREF
-    );
-  }
-}
-
-class MyCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pCharacteristic) {
-    portENTER_CRITICAL(&mux);
-    lastActivityTime = millis();
-    portEXIT_CRITICAL(&mux);
-    const uint8_t* data = pCharacteristic->getData();
-    size_t len = pCharacteristic->getLength();
-    int ledCount = len / 3;
-    if (ledCount == 0) return;
-
-    for (int i = 0; i < NUM_LEDS; i++) {
-      int idx = (i * ledCount) / NUM_LEDS;
-      if (idx >= ledCount) idx = ledCount - 1;
-      leds[i] = CRGB(data[idx * 3], data[idx * 3 + 1], data[idx * 3 + 2]);
-    }
-
-    FastLED.show();
-
-    uint8_t doneByte[1] = { 0x01 };
-    pTxCharacteristic->setValue(doneByte, 1);
-    pTxCharacteristic->notify();
-  }
-};
 
 void setup() {
   Serial.begin(115200);
-  FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-  FastLED.setBrightness(BRIGHTNESS);
-  FastLED.clear(); FastLED.show();
 
-  BLEDevice::init("Bluno strip");
-  BLEDevice::setMTU(247);
-  esp_ble_gap_register_callback(gapCallback);
+  pinMode(rPin, OUTPUT);
+  pinMode(gPin, OUTPUT);
+  pinMode(bPin, OUTPUT);
 
-  BLEServer* pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(100);
+  }
+  Serial.println("Connected!");
+  Serial.printf("ESP32 IP: %s\n", WiFi.localIP().toString().c_str());
 
-  BLEService* pService = pServer->createService(SERVICE_UUID);
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
-  BLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_RX,
-    BLECharacteristic::PROPERTY_WRITE_NR
-  );
-  pRxCharacteristic->setCallbacks(new MyCallbacks());
+  if (MDNS.begin(DEVICE_ID)) {
+    MDNS.addService("rgbapp", "udp", UDP_PORT);
+    MDNS.addServiceTxt("rgbapp", "udp", "name", "Bluno Clock");
+    MDNS.addServiceTxt("rgbapp", "udp", "id", DEVICE_ID);
+    Serial.printf("mDNS started: %s.local\n", DEVICE_ID);
+  } else {
+    Serial.println("mDNS setup failed");
+  }
 
-  pTxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_TX,
-    BLECharacteristic::PROPERTY_NOTIFY
-  );
-  pTxCharacteristic->addDescriptor(new BLE2902());
+  udp.begin(UDP_PORT);
+  Serial.printf("UDP server listening on port %u\n", UDP_PORT);
 
-  pService->start();
-
-  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
+  lastActivityTime = millis();
 }
 
 void loop() {
-  unsigned long diff;
-  portENTER_CRITICAL(&mux);
-  diff = millis() - lastActivityTime;
-  portEXIT_CRITICAL(&mux);
-  if (diff >= 10000) {
-    if (diff <= 70000 ) {
-      slowPulse();
-    } else {
-      disabled();
-    }
-    
+  int packetSize = udp.parsePacket();
+  if (packetSize > 0) {
+    IPAddress srcIP = udp.remoteIP();
+    unsigned int srcPort = udp.remotePort();
+
+    char buffer[64];
+    int len = udp.read(buffer, sizeof(buffer) - 1);
+    if (len <= 0) return;
+    buffer[len] = '\0';
+
+    Serial.printf("📥 Received: %s from %s:%u\n", buffer, srcIP.toString().c_str(), srcPort);
+
+    processRGBData(String(buffer));
+    lastActivityTime = millis();
+
+    udp.beginPacket(srcIP, srcPort);
+    udp.write((uint8_t *)"\x01", 1);
+    udp.endPacket();
+
+    Serial.println("✅ Applied RGB and sent DONE (0x01)");
+  }
+
+  if (millis() - lastActivityTime >= 10000) {
+    slowPulse();
     delay(25);
+  }
+}
+
+void processRGBData(String data) {
+  data.trim();
+  if (data.startsWith("[") && data.endsWith("]")) {
+    data = data.substring(1, data.length() - 1);
+    int firstComma = data.indexOf(',');
+    int secondComma = data.lastIndexOf(',');
+
+    int r = data.substring(0, firstComma).toInt();
+    int g = data.substring(firstComma + 1, secondComma).toInt();
+    int b = data.substring(secondComma + 1).toInt();
+
+    if (r >= 0 && g >= 0 && b >= 0) {
+      analogWrite(rPin, 255 - r);
+      analogWrite(gPin, 255 - g);
+      analogWrite(bPin, 255 - b);
+    }
   }
 }
 
@@ -144,17 +105,7 @@ void slowPulse() {
     pulseDirection = -pulseDirection;
   }
 
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = CRGB(pulseValue, pulseValue, pulseValue);
-  }
-
-  FastLED.show();
-}
-
-void disabled() {
-  for (int i = 0; i < NUM_LEDS; i++) {
-    leds[i] = CRGB(0, 0, 0);
-  }
-
-  FastLED.show();
+  analogWrite(rPin, pulseValue);
+  analogWrite(gPin, pulseValue);
+  analogWrite(bPin, pulseValue);
 }
