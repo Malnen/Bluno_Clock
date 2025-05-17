@@ -7,8 +7,8 @@ const int rPin = 3;
 const int gPin = 4;
 const int bPin = 5;
 
-const char* WIFI_SSID = "Czekoladowa Rozkosz";
-const char* WIFI_PASSWORD = "MlecznaDolina";
+const char* WIFI_SSID = "";
+const char* WIFI_PASSWORD = "";
 const unsigned int UDP_PORT = 4210;
 const char* DEVICE_ID = "b4e91b7f";
 
